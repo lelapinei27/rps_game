@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 가위바위보</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; min-height: 100%;
+    background: linear-gradient(160deg, #1e1b4b, #0f172a);
+    color: #fff; font-family: "Pretendard", "Malgun Gothic", sans-serif;
+  }
+  body { display: flex; flex-direction: column; align-items: center; padding: 16px; gap: 14px; }
+
+  /* 1. 제목 + 가위바위보 이미지 */
+  header { display: flex; align-items: center; gap: 14px; }
+  header h1 { margin: 0; font-size: clamp(28px, 6vw, 48px); letter-spacing: 2px; }
+  .hands { font-size: clamp(30px, 6vw, 50px); display: flex; gap: 6px; }
+  .hands span { display: inline-block; animation: bounce 1.2s infinite; }
+  .hands span:nth-child(2) { animation-delay: .2s; }
+  .hands span:nth-child(3) { animation-delay: .4s; }
+  @keyframes bounce { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+
+  /* 2. 버튼 */
+  .buttons { display: flex; gap: 12px; }
+  button {
+    font-size: 20px; font-weight: bold; padding: 12px 28px;
+    border: none; border-radius: 12px; cursor: pointer; color: #fff;
+    transition: transform .1s, opacity .2s;
+  }
+  button:active { transform: scale(.95); }
+  button:disabled { opacity: .4; cursor: default; }
+  #startBtn { background: #22c55e; }
+  #stopBtn  { background: #ef4444; }
+
+  /* 3. 카메라 화면 */
+  .cam-wrap {
+    position: relative; width: min(640px, 100%); aspect-ratio: 4 / 3;
+    border-radius: 18px; overflow: hidden; background: #000;
+    box-shadow: 0 0 0 4px #6366f1, 0 10px 30px rgba(0,0,0,.5);
+  }
+  video { width: 100%; height: 100%; object-fit: cover; transform: scaleX(-1); display: block; }
+  #live {
+    position: absolute; top: 10px; right: 10px;
+    padding: 6px 12px; border-radius: 10px; background: rgba(0,0,0,.6); font-size: 16px;
+  }
+  #countdown {
+    position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+    font-size: 120px; font-weight: bold; text-shadow: 0 0 20px #000; pointer-events: none;
+  }
+
+  /* 4, 5. 결과 + 점수 */
+  .panel {
+    width: min(640px, 100%); background: rgba(255,255,255,.08);
+    border-radius: 16px; padding: 14px 18px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .row { display: flex; justify-content: space-around; flex-wrap: wrap; gap: 10px; text-align: center; }
+  .item .name { font-size: 15px; opacity: .75; }
+  .item .val  { font-size: 26px; font-weight: bold; margin-top: 4px; }
+  .score .val { font-size: 32px; }
+  .win  { color: #4ade80; }
+  .draw { color: #facc15; }
+  .lose { color: #f87171; }
+  hr { border: none; border-top: 1px solid rgba(255,255,255,.15); margin: 0; width: 100%; }
+
+  /* 6. 폭죽 캔버스 */
+  #fireworks { position: fixed; inset: 0; width: 100vw; height: 100vh; pointer-events: none; z-index: 10; }
+</style>
+</head>
+<body>
+
+<!-- 1. 제목 -->
+<header>
+  <div class="hands"><span>✊</span><span>✌️</span><span>✋</span></div>
+  <h1>AI 가위바위보</h1>
+</header>
+
+<!-- 2. 버튼 -->
+<div class="buttons">
+  <button id="startBtn">게임 시작</button>
+  <button id="stopBtn" disabled>게임 종료</button>
+</div>
+
+<!-- 3. 카메라 -->
+<div class="cam-wrap">
+  <video id="video" autoplay playsinline muted></video>
+  <div id="live">준비 중…</div>
+  <div id="countdown"></div>
+</div>
+
+<!-- 4, 5. 결과와 점수 -->
+<div class="panel">
+  <div class="row">
+    <div class="item"><div class="name">내 제스처 (AI 인식)</div><div class="val" id="myHand">-</div></div>
+    <div class="item"><div class="name">컴퓨터</div><div class="val" id="comHand">-</div></div>
+    <div class="item"><div class="name">결과</div><div class="val" id="result">-</div></div>
+  </div>
+  <hr>
+  <div class="row score">
+    <div class="item"><div class="name">승</div><div class="val win" id="winCnt">0</div></div>
+    <div class="item"><div class="name">무승부</div><div class="val draw" id="drawCnt">0</div></div>
+    <div class="item"><div class="name">패</div><div class="val lose" id="loseCnt">0</div></div>
+  </div>
+</div>
+
+<!-- 6. 폭죽 -->
+<canvas id="fireworks"></canvas>
+
+<script>
+  // ===== 설정 (기존 코드 그대로) =====
+  const API_KEY = "5fFfppTgmIh19q7wQQ4Q";
+  const API_URL = "https://serverless.roboflow.com/processed-rock-paper-icufd/1?api_key=" + API_KEY;
+  const MIN_CONFIDENCE = 0.5;   // 이보다 낮으면 "인식 안 됨"
+  const INTERVAL_MS = 300;      // 실시간 인식 요청 간격
+  const ROUND_SEC = 5;          // 7. 5초 간격으로 게임 진행
+
+  const NAMES = { rock: "바위 ✊", paper: "보 ✋", scissors: "가위 ✌️" };
+  const CHOICES = ["rock", "paper", "scissors"];
+  const BEATS = { rock: "scissors", scissors: "paper", paper: "rock" }; // 키가 값을 이김
+
+  // ===== 화면 요소 =====
+  const $ = id => document.getElementById(id);
+  const video = $("video"), liveEl = $("live"), countEl = $("countdown");
+  const myEl = $("myHand"), comEl = $("comHand"), resEl = $("result");
+  const startBtn = $("startBtn"), stopBtn = $("stopBtn");
+  const score = { win: 0, draw: 0, lose: 0 };
+
+  const canvas = document.createElement("canvas");
+  const ctx = canvas.getContext("2d");
+
+  let lastGesture = null;   // 가장 최근 AI 인식 결과 (rock/paper/scissors 또는 null)
+  let playing = false;
+  let timer = null;
+  let remain = ROUND_SEC;
+
+  // ===== 음성 출력 (TTS) =====
+  function speakWin() {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel(); // 이전 음성 취소
+      const utterance = new SpeechSynthesisUtterance("당신이 이겼습니다");
+      utterance.lang = "ko-KR";
+      utterance.rate = 1.0;
+      window.speechSynthesis.speak(utterance);
+    }
+  }
+
+  // ===== 폭죽 사운드 합성 (Web Audio API) =====
+  function playFireworkSound() {
+    try {
+      const AudioContext = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContext) return;
+      const audioCtx = new AudioContext();
+
+      // 노이즈 버퍼 생성 (폭발음 재현)
+      const bufferSize = audioCtx.sampleRate * 0.4;
+      const buffer = audioCtx.createBuffer(1, bufferSize, audioCtx.sampleRate);
+      const data = buffer.getChannelData(0);
+      for (let i = 0; i < bufferSize; i++) {
+        data[i] = Math.random() * 2 - 1;
+      }
+
+      const noise = audioCtx.createBufferSource();
+      noise.buffer = buffer;
+
+      // 저주파 필터로 묵직한 폭발음 생성
+      const filter = audioCtx.createBiquadFilter();
+      filter.type = 'lowpass';
+      filter.frequency.setValueAtTime(800, audioCtx.currentTime);
+      filter.frequency.exponentialRampToValueAtTime(30, audioCtx.currentTime + 0.4);
+
+      // 음량 감쇄
+      const gain = audioCtx.createGain();
+      gain.gain.setValueAtTime(0.5, audioCtx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.4);
+
+      noise.connect(filter);
+      filter.connect(gain);
+      gain.connect(audioCtx.destination);
+
+      noise.start();
+    } catch (e) {
+      // AudioContext 제한 시 예외 처리
+    }
+  }
+
+  // ===== 카메라 시작 =====
+  async function startCamera() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
+      video.srcObject = stream;
+      await video.play();
+      recognizeLoop();
+    } catch (err) {
+      liveEl.textContent = "카메라 오류: " + err.message;
+    }
+  }
+
+  // 현재 프레임을 JPEG base64로 변환
+  function captureFrame() {
+    const w = 320;
+    const h = Math.round(video.videoHeight * (w / video.videoWidth));
+    canvas.width = w; canvas.height = h;
+    ctx.drawImage(video, 0, 0, w, h);
+    return canvas.toDataURL("image/jpeg", 0.8).split(",")[1];
+  }
+
+  async function infer() {
+    const res = await fetch(API_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: captureFrame()
+    });
+    if (!res.ok) throw new Error("API 오류 " + res.status);
+    const p = await res.json();
+    return { top: p.top, confidence: p.confidence ?? 0 };
+  }
+
+  // 실시간 손 모양 인식 (카메라 오른쪽 위에 표시)
+  async function recognizeLoop() {
+    try {
+      const { top, confidence } = await infer();
+      const key = top ? top.toLowerCase() : null;
+      if (key && NAMES[key] && confidence >= MIN_CONFIDENCE) {
+        lastGesture = key;
+        liveEl.textContent = `${NAMES[key]} · ${(confidence * 100).toFixed(0)}%`;
+      } else {
+        lastGesture = null;
+        liveEl.textContent = "인식 안 됨";
+      }
+    } catch (err) {
+      lastGesture = null;
+      liveEl.textContent = "오류: " + err.message;
+    }
+    setTimeout(recognizeLoop, INTERVAL_MS);
+  }
+
+  // ===== 게임 진행 =====
+  function startGame() {
+    if (playing) return;
+    playing = true;
+    startBtn.disabled = true; stopBtn.disabled = false;
+    score.win = score.draw = score.lose = 0;
+    updateScore();
+    myEl.textContent = comEl.textContent = "-";
+    setResult("-", "");
+    remain = ROUND_SEC;
+    countEl.textContent = remain;
+    timer = setInterval(tick, 1000);
+  }
+
+  function stopGame() {
+    playing = false;
+    clearInterval(timer);
+    startBtn.disabled = false; stopBtn.disabled = true;
+    countEl.textContent = "";
+    setResult(`게임 종료`, "");
+  }
+
+  // 1초마다 카운트다운, 0이 되면 한 판 진행
+  function tick() {
+    remain--;
+    if (remain > 0) {
+      countEl.textContent = remain;
+      return;
+    }
+    playRound();
+    remain = ROUND_SEC;
+    countEl.textContent = remain;
+  }
+
+  function playRound() {
+    const me = lastGesture;
+    const com = CHOICES[Math.floor(Math.random() * 3)];
+    comEl.textContent = NAMES[com];
+
+    if (!me) {
+      myEl.textContent = "인식 안 됨";
+      setResult("다시!", "");
+      return;
+    }
+    myEl.textContent = NAMES[me];
+
+    if (me === com) {
+      score.draw++; setResult("무승부", "draw");
+    } else if (BEATS[me] === com) {
+      score.win++;  setResult("승 🎉", "win");
+      launchFireworks();
+      speakWin(); // 승리 음성 출력
+    } else {
+      score.lose++; setResult("패", "lose");
+    }
+    updateScore();
+  }
+
+  function setResult(text, cls) {
+    resEl.textContent = text;
+    resEl.className = "val " + cls;
+  }
+
+  function updateScore() {
+    $("winCnt").textContent = score.win;
+    $("drawCnt").textContent = score.draw;
+    $("loseCnt").textContent = score.lose;
+  }
+
+  startBtn.addEventListener("click", startGame);
+  stopBtn.addEventListener("click", stopGame);
+
+  // ===== 6. 폭죽 그래픽 =====
+  const fw = $("fireworks");
+  const fctx = fw.getContext("2d");
+  let particles = [];
+  let animating = false;
+
+  function resizeFw() { fw.width = innerWidth; fw.height = innerHeight; }
+  addEventListener("resize", resizeFw);
+  resizeFw();
+
+  function burst(x, y) {
+    playFireworkSound(); // 폭죽 터질 때 사운드 재생
+    const hue = Math.random() * 360;
+    for (let i = 0; i < 80; i++) {
+      const angle = Math.random() * Math.PI * 2;
+      const speed = 2 + Math.random() * 6;
+      particles.push({
+        x, y,
+        vx: Math.cos(angle) * speed,
+        vy: Math.sin(angle) * speed,
+        life: 60 + Math.random() * 30,
+        color: `hsl(${hue + Math.random() * 40}, 100%, 60%)`
+      });
+    }
+    if (!animating) { animating = true; requestAnimationFrame(draw); }
+  }
+
+  function launchFireworks() {
+    for (let i = 0; i < 6; i++) {
+      setTimeout(() => {
+        burst(fw.width * (0.15 + Math.random() * 0.7), fw.height * (0.15 + Math.random() * 0.45));
+      }, i * 250);
+    }
+  }
+
+  function draw() {
+    fctx.clearRect(0, 0, fw.width, fw.height);
+    particles.forEach(p => {
+      p.x += p.vx; p.y += p.vy;
+      p.vy += 0.08;          // 중력
+      p.vx *= 0.98; p.vy *= 0.98;
+      p.life--;
+      fctx.globalAlpha = Math.max(p.life / 90, 0);
+      fctx.fillStyle = p.color;
+      fctx.beginPath();
+      fctx.arc(p.x, p.y, 3, 0, Math.PI * 2);
+      fctx.fill();
+    });
+    fctx.globalAlpha = 1;
+    particles = particles.filter(p => p.life > 0);
+    if (particles.length > 0) {
+      requestAnimationFrame(draw);
+    } else {
+      animating = false;
+      fctx.clearRect(0, 0, fw.width, fw.height);
+    }
+  }
+
+  startCamera();
+</script>
+</body>
+</html>
